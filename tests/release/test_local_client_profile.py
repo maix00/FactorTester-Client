@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from tools.cli.app import cli
 from tools.cli.client import FactorTesterClient
+from tools.cli.http import HttpSession
 from tools.cli.release.local_profile import LocalProfileStore, new_local_profile
 from tools.cli.release.local_profile import validate_local_profile
 from tools.cli.release.adapters.profile_binding import adapter_binding
@@ -32,8 +33,11 @@ def test_local_profile_is_strict_private_and_version_independent(
     assert path.stat().st_mode & 0o777 == 0o600
     assert not (root / "current.json").exists()
     assert not {"password", "token", "email"}.intersection(stored)
-    assert stored["schema_version"] == 2
+    assert stored["schema_version"] == 6
     assert stored["workspaces"] == []
+    assert stored["initialization_sources"] == []
+    assert stored["session_binding"] == {}
+    assert stored["research_records"] == []
 
     with pytest.raises(ValueError, match="fields"):
         validate_local_profile({**stored, "token": "must-not-be-stored"})
@@ -57,6 +61,17 @@ def test_client_cli_exposes_generic_profile_and_adapter_commands(
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["profile_id"] == "research-a"
+    workspace = tmp_path / "workspace"
+    assert workspace.is_dir()
+    assert workspace.stat().st_mode & 0o777 == 0o700
+    repeated = runner.invoke(cli, [
+        "client", "profile", "init",
+        "--profile-id", "research-a",
+        "--display-name", "Research A",
+        "--server-url", "http://127.0.0.1:8123",
+        "--workspace-root", str(workspace),
+    ])
+    assert repeated.exit_code == 0, repeated.output
     assert runner.invoke(cli, ["client", "profile", "list"]).exit_code == 0
     adapters = runner.invoke(cli, ["client", "adapter", "list"])
     assert adapters.exit_code == 0
@@ -81,9 +96,198 @@ def test_version_one_profile_is_upgraded_without_losing_identity(
 
     upgraded = LocalProfileStore(root).load("legacy")
 
-    assert upgraded["schema_version"] == 2
+    assert upgraded["schema_version"] == 6
     assert upgraded["profile_id"] == "legacy"
     assert upgraded["workspaces"] == []
+    assert upgraded["initialization_sources"] == []
+
+
+def test_bootstrap_claims_isolated_agents_with_shared_library_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "client-support"
+    monkeypatch.setenv("FACTORTESTER_CLIENT_ROOT", str(root))
+    monkeypatch.setattr(
+        FactorTesterClient,
+        "current_principal",
+        lambda self: {"username": "principal-a"},
+    )
+    monkeypatch.setattr(
+        FactorTesterClient,
+        "factor_library_sources",
+        lambda self: {
+            "principal": "principal-a",
+            "sources": [{
+                "owner_ref": "principal-a",
+                "owner_alias": "principal-a",
+                "factor_count": 1,
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        FactorTesterClient,
+        "factor_library_source_projection",
+        lambda self, owner_ref: {
+            "projection": {
+                "schema_version": 1,
+                "principal": "principal-a",
+                "owner_ref": owner_ref,
+                "factors": [{"factor_alias": "SgCCS"}],
+            },
+            "projection_hash": "a" * 64,
+        },
+    )
+    runner = CliRunner()
+
+    for profile_id, agent_id in (
+        ("maxa", "research-maxa"),
+        ("maxb", "research-maxb"),
+    ):
+        result = runner.invoke(cli, [
+            "client", "profile", "bootstrap",
+            "--profile-id", profile_id,
+            "--display-name", profile_id.upper(),
+            "--server-url", "http://127.0.0.1:8000",
+            "--agent-id", agent_id,
+            "--principal-ref", "principal-a",
+            "--workspace-root", str(tmp_path / "profiles" / profile_id),
+        ])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["local_profile_claimed"]
+        assert not payload["local_source_registered"]
+        assert payload["server_visibility_verified"]
+        assert payload["ready"] is False
+        assert payload["can_start_inspection_and_planning"] is True
+        assert payload["claim_command"] == (
+            f"factortester client profile claim {profile_id} {agent_id}"
+        )
+        assert "Codex" not in payload["agent_prompt"]
+        receipt = payload["claim_receipt"]
+        assert receipt["can_start_inspection_and_planning"] is True
+        assert receipt["research_execution_scope_bound"] is False
+        assert Path(receipt["workspace_root"]).stat().st_mode & 0o777 == 0o700
+        profile = payload["profile"]
+        assert profile["profile_id"] == profile_id
+        assert profile["agents"][0]["agent_id"] == agent_id
+        assert profile["session_binding"]["principal_ref"] == "principal-a"
+        assert profile["initialization_sources"] == []
+        bound = runner.invoke(cli, [
+            "client", "profile", "initialization", "bind", profile_id,
+            "--owner-ref", "principal-a",
+        ])
+        assert bound.exit_code == 0, bound.output
+        profile = json.loads(bound.output)
+        source = profile["initialization_sources"][0]
+        assert source["owner_ref"] == "principal-a"
+        assert source["mode"] == "reference"
+        assert source["source_ref"].endswith("/principal-a")
+        assert source["principal_ref"] == "principal-a"
+        assert source["projection_hash"] == "a" * 64
+        assert source["source_materialized"] is False
+        assert source["session_ref"].startswith(
+            "session-binding://principal-a/"
+        )
+        assert not {"password", "token"}.intersection(source)
+        claimed = runner.invoke(cli, [
+            "client", "profile", "claim", profile_id, agent_id,
+        ])
+        assert claimed.exit_code == 0, claimed.output
+        updated_receipt = json.loads(claimed.output)
+        assert updated_receipt["receipt_hash"] != receipt["receipt_hash"]
+        receipt_path = Path(
+            updated_receipt["receipt_ref"].removeprefix("file://")
+        )
+        before_mtime = receipt_path.stat().st_mtime_ns
+        repeated_claim = runner.invoke(cli, [
+            "client", "profile", "claim", profile_id, agent_id,
+        ])
+        assert repeated_claim.exit_code == 0, repeated_claim.output
+        assert json.loads(repeated_claim.output)["receipt_hash"] == (
+            updated_receipt["receipt_hash"]
+        )
+        assert receipt_path.stat().st_mtime_ns == before_mtime
+
+    maxa = LocalProfileStore(root).load("maxa")
+    maxb = LocalProfileStore(root).load("maxb")
+    assert maxa["workspace_root"] != maxb["workspace_root"]
+    assert Path(maxa["workspace_root"]).is_dir()
+    assert Path(maxb["workspace_root"]).is_dir()
+    assert maxa["agents"] != maxb["agents"]
+    assert maxa["initialization_sources"][0]["session_ref"] != (
+        maxb["initialization_sources"][0]["session_ref"]
+    )
+
+
+def test_bootstrap_fails_closed_before_local_write_on_principal_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "client-support"
+    monkeypatch.setenv("FACTORTESTER_CLIENT_ROOT", str(root))
+    monkeypatch.setattr(
+        FactorTesterClient,
+        "current_principal",
+        lambda self: {"username": "someone-else"},
+    )
+
+    result = CliRunner().invoke(cli, [
+        "client", "profile", "bootstrap",
+        "--profile-id", "maxa",
+        "--display-name", "MaxA",
+        "--server-url", "http://127.0.0.1:8000",
+        "--agent-id", "research-maxa",
+        "--principal-ref", "principal-a",
+    ])
+
+    assert result.exit_code != 0
+    assert "does not match" in result.output
+    assert not (root / "profiles").exists()
+
+
+def test_bootstrap_does_not_rebind_existing_profile_to_new_principal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "client-support"
+    monkeypatch.setenv("FACTORTESTER_CLIENT_ROOT", str(root))
+    active = {"username": "principal-a"}
+    monkeypatch.setattr(
+        FactorTesterClient,
+        "current_principal",
+        lambda self: {"username": active["username"]},
+    )
+    monkeypatch.setattr(
+        FactorTesterClient,
+        "factor_library_source_projection",
+        lambda self, owner_ref: {
+            "projection": {
+                "principal": owner_ref,
+                "owner_ref": owner_ref,
+                "factors": [],
+            },
+            "projection_hash": owner_ref.zfill(64)[-64:],
+        },
+    )
+    runner = CliRunner()
+    base = [
+        "client", "profile", "bootstrap",
+        "--profile-id", "maxa",
+        "--display-name", "MaxA",
+        "--server-url", "http://127.0.0.1:8000",
+        "--agent-id", "research-maxa",
+    ]
+    first = runner.invoke(cli, [*base, "--principal-ref", active["username"]])
+    assert first.exit_code == 0, first.output
+    before = (root / "profiles" / "maxa.json").read_bytes()
+
+    active["username"] = "other-user"
+    second = runner.invoke(cli, [*base, "--principal-ref", active["username"]])
+
+    assert second.exit_code != 0
+    assert "bound to another principal" in second.output
+    assert (root / "profiles" / "maxa.json").read_bytes() == before
 
 
 def test_local_agent_identity_resumes_without_provider_or_model_fields(
@@ -199,3 +403,98 @@ def test_adapter_profile_binding_exposes_only_opaque_references(
         "keychain://"
     )
     assert "password" not in json.dumps(binding).lower()
+
+
+def test_profile_history_stores_only_compact_refs_and_deep_links(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "client-support"
+    store = LocalProfileStore(root)
+    store.save(new_local_profile(
+        profile_id="maxa",
+        display_name="MaxA",
+        server_url="http://127.0.0.1:8000",
+        workspace_root=tmp_path / "workspace",
+    ))
+    record = {
+        "record_id": "research-1",
+        "title": "SgCCS review",
+        "status": "ready",
+        "scope": {"factor_families": ["SgCCS"]},
+        "factor_family_versions": ["SgCCS@7"],
+        "agent_id": "research-maxa",
+        "created_at": 1.0,
+        "updated_at": 2.0,
+        "workspace_ref": "workspace:dd2322",
+        "run_ref": "run:1",
+        "graph_instance_ref": "instance:1",
+        "graph_branch_ref": "branch:1",
+        "checkpoint_ref": "checkpoint:1",
+        "evidence_refs": ["evidence:1"],
+        "timeline_refs": [{
+            "link_id": "step-1",
+            "kind": "trial_plan",
+            "target_ref": "trial-plan:1",
+            "section_ref": "section:method",
+        }],
+        "artifacts": [{
+            "artifact_ref": "report:1",
+            "format": "markdown",
+            "status": "ready",
+            "content_hash": "sha256:abc",
+            "local_ref": (tmp_path / "report.md").as_uri(),
+            "index_ref": (tmp_path / "REPORT.index.json").as_uri(),
+            "section_refs": [{
+                "link_id": "section-method",
+                "kind": "evidence",
+                "target_ref": "evidence:1",
+                "section_ref": "section:method",
+            }],
+        }],
+        "provenance": {
+            "kind": "owned_legacy_research",
+            "owner_ref": "default$MaxA@1",
+        },
+    }
+
+    saved = store.upsert_research_record("maxa", record)
+
+    assert saved["research_records"] == [record]
+    serialized = json.dumps(saved)
+    assert "report body" not in serialized
+    assert "source_code" not in serialized
+
+
+def test_ui_session_bridge_uses_stdin_and_verifies_principal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACTORTESTER_HOME", str(tmp_path / "cli-home"))
+    monkeypatch.setattr(
+        FactorTesterClient,
+        "current_principal",
+        lambda self: {"username": "principal-a"},
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "client", "profile", "import-ui-session",
+            "--server-url", "http://127.0.0.1:8000",
+            "--principal-ref", "principal-a",
+        ],
+        input=json.dumps({"cookies": [{
+            "name": "session",
+            "value": "opaque-secret",
+            "domain": "127.0.0.1",
+            "path": "/",
+            "secure": False,
+        }]}),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "opaque-secret" not in result.output
+    assert json.loads(result.output)["verified"] is True
+    restored = HttpSession("http://127.0.0.1:8000")
+    assert [(cookie.name, cookie.value) for cookie in restored.cookie_jar] == [
+        ("session", "opaque-secret")
+    ]

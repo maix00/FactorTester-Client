@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- macOS 13 or newer for `FactorTester-Client.app`;
+- macOS 13 or newer for `FTClient.app`;
 - HTTPS access to the public FactorTester client release;
 - a FactorTester server account for remote research.
 
@@ -12,7 +12,9 @@ No server source checkout, database driver, or local backtest engine is needed.
 
 For the normal macOS installation experience, download
 `FactorTester-Client.dmg` from the public GitHub Release, open it, and drag
-`FactorTester-Client.app` to Applications. The GitHub Release exposes only
+`FTClient.app` to Applications. On first launch, the signed client safely
+retires a matching legacy `/Applications/FactorTester-Client.app`, so Finder
+and Launchpad do not retain two visible clients. The GitHub Release exposes only
 this DMG. The CLI, research Harness, their Python runtime dependencies, and
 approved adapters live inside the signed app Resources and are covered by an
 internal hash receipt; users do not download those components separately.
@@ -42,6 +44,28 @@ default to `~/Documents/FactorTester/profiles/<profile-id>/workspaces`.
 Each workspace retains its own `owner_ref` and access mode; an authorized
 workspace is never relabeled as the profile owner. Large local data is
 referenced from `local-data` rather than copied into the profile.
+
+An Agent can idempotently discover, claim, and register a provider-neutral
+profile in one command:
+
+```bash
+factortester client profile bootstrap \
+  --profile-id maxa \
+  --display-name MaxA \
+  --server-url http://127.0.0.1:8000 \
+  --agent-id research-maxa \
+  --principal-ref MaxA
+```
+
+The returned `agent_prompt` is the compact hand-off text for any Agent
+provider. `--principal-ref` must match the currently authenticated server
+principal. Initialization sources are selected separately from the server's
+authorized grant list; the client records the immutable grant and source
+references without accepting a free-form source owner. A source account does
+not become the profile owner, and no source-account password or token is
+stored. MaxA and MaxB may use the same authorized initialization source while
+retaining different profile IDs, Agent IDs, workspace roots, and research
+records.
 
 Workspace migration starts with an inventory-only plan:
 

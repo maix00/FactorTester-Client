@@ -42,6 +42,12 @@ def test_macos_settings_use_single_verified_github_dmg() -> None:
 
 
 def test_apple_project_generation_and_new_swift_syntax(tmp_path: Path) -> None:
+    project = (ROOT / "apple" / "project.yml").read_text(encoding="utf-8")
+    assert 'MARKETING_VERSION: "0.2.0b1"' in project
+    assert project.count(
+        "CFBundleShortVersionString: $(MARKETING_VERSION)"
+    ) == 2
+    assert project.count("CFBundleVersion: $(CURRENT_PROJECT_VERSION)") == 2
     subprocess.run(
         [
             "xcodegen",

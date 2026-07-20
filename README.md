@@ -11,7 +11,7 @@ Download the client wheel and release profile from the latest GitHub Release.
 Then inspect the signed installation plan before applying it:
 
 ```bash
-python -m pip install factortester-0.1.2-py3-none-any.whl
+python -m pip install factortester-0.2.0b1-py3-none-any.whl
 factortester client bootstrap --profile client-profile.json --dry-run --json
 factortester client bootstrap --profile client-profile.json --json
 ```
