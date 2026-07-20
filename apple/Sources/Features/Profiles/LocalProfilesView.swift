@@ -21,6 +21,9 @@ struct LocalProfilesView: View {
                     LocalProfileForm(controller: controller)
                     if let profile = selectedProfile {
                         profileDetails(profile)
+                        InitializationSourceView(profile: profile)
+                        WorkspaceRepairView(profile: profile)
+                        ResearchHistoryView(profile: profile)
                         Button(
                             activeID == profile.id
                                 ? "当前 Adapter Profile"
@@ -66,6 +69,33 @@ struct LocalProfilesView: View {
                 Text(profile.serverURL).font(.callout)
                 Text(profile.workspaceRoot)
                     .font(.caption).foregroundStyle(.secondary)
+                Divider()
+                Text("初始化来源")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if profile.initializationSources.isEmpty {
+                    Text("尚未登记当前登录用户的个人因子库")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(profile.initializationSources) { source in
+                    HStack {
+                        Label("当前 principal：\(source.ownerRef)", systemImage: "books.vertical")
+                        Text(source.mode).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(source.sourceRef).font(.caption)
+                    }
+                }
+                Divider()
+                Text("可见工作区")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if profile.workspaces.isEmpty {
+                    Text("尚未登记工作区")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(profile.workspaces) { workspace in
+                    WorkspaceRegistryRow(workspace: workspace)
+                }
                 Divider()
                 if profile.agents.isEmpty {
                     Text("尚未登记 Agent").foregroundStyle(.secondary)

@@ -1,5 +1,21 @@
 import Foundation
 
+struct LocalWorkspaceModel: Identifiable {
+    let id: String
+    let path: String
+    let accessMode: String
+    let ownerRef: String
+    let serverWorkspaceRef: String
+
+    init(json: [String: Any]) {
+        id = json["workspace_id"] as? String ?? ""
+        path = json["path"] as? String ?? ""
+        accessMode = json["access_mode"] as? String ?? ""
+        ownerRef = json["owner_ref"] as? String ?? ""
+        serverWorkspaceRef = json["server_workspace_ref"] as? String ?? ""
+    }
+}
+
 struct LocalAgentModel: Identifiable {
     let id: String
     let role: String
@@ -16,12 +32,30 @@ struct LocalAgentModel: Identifiable {
     }
 }
 
+struct LocalInitializationSourceModel: Identifiable {
+    let id: String
+    let ownerRef: String
+    let mode: String
+    let sourceRef: String
+
+    init(json: [String: Any]) {
+        id = json["source_id"] as? String ?? ""
+        ownerRef = json["owner_ref"] as? String ?? ""
+        mode = json["mode"] as? String ?? ""
+        sourceRef = json["source_ref"] as? String ?? ""
+    }
+}
+
 struct LocalProfileModel: Identifiable {
     let id: String
     let displayName: String
     let serverURL: String
     let workspaceRoot: String
+    let workspaces: [LocalWorkspaceModel]
+    let initializationSources: [LocalInitializationSourceModel]
     let agents: [LocalAgentModel]
+    let principalRef: String
+    let researchRecords: [ResearchRecordModel]
 
     init(json: [String: Any]) {
         id = json["profile_id"] as? String ?? ""
@@ -29,7 +63,18 @@ struct LocalProfileModel: Identifiable {
         serverURL = (json["server"] as? [String: Any])?["base_url"]
             as? String ?? ""
         workspaceRoot = json["workspace_root"] as? String ?? ""
+        principalRef = (
+            json["session_binding"] as? [String: Any]
+        )?["principal_ref"] as? String ?? ""
+        workspaces = (json["workspaces"] as? [[String: Any]] ?? [])
+            .map(LocalWorkspaceModel.init)
+        initializationSources = (
+            json["initialization_sources"] as? [[String: Any]] ?? []
+        ).map(LocalInitializationSourceModel.init)
         agents = (json["agents"] as? [[String: Any]] ?? [])
             .map(LocalAgentModel.init)
+        researchRecords = (
+            json["research_records"] as? [[String: Any]] ?? []
+        ).map(ResearchRecordModel.init)
     }
 }

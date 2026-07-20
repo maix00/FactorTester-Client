@@ -65,6 +65,11 @@ struct AuthResponse: Codable {
     }
 }
 
+struct ActionResponse: Codable {
+    let success: Bool
+    let error: String?
+}
+
 enum APIError: LocalizedError {
     case notConfigured
     case server(String)
@@ -72,7 +77,8 @@ enum APIError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: return "尚未配置服务器地址，请先在设置中填写。"
+        case .notConfigured:
+            return L10n.text("尚未配置服务器地址，请先在设置中填写。")
         case .server(let m): return m
         case .transport(let m): return m
         }

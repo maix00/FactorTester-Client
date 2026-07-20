@@ -1,7 +1,8 @@
 import SwiftUI
 
 @main
-struct GTHTApp: App {
+struct FactorTesterClientApp: App {
+    @AppStorage("client.language") private var language = AppLanguage.system.rawValue
     @StateObject private var config = ServerConfig.shared
     @StateObject private var session = SessionStore()
     @StateObject private var registry = ModuleRegistry()
@@ -12,6 +13,13 @@ struct GTHTApp: App {
                 .environmentObject(config)
                 .environmentObject(session)
                 .environmentObject(registry)
+                .environment(
+                    \.locale,
+                    AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent
+                )
+                #if os(macOS)
+                .task { try? LegacyAppNameMigration.run() }
+                #endif
         }
         #if os(macOS)
         .defaultSize(width: 1000, height: 720)
