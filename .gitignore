@@ -1,0 +1,9 @@
+.DS_Store
+*.egg-info/
+*.pyc
+__pycache__/
+.pytest_cache/
+apple/build/
+apple/GTHTClient.xcodeproj/
+build/
+dist/
